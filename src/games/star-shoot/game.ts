@@ -275,6 +275,31 @@ export function chooseGun(state: StarShootState, gunId: string): boolean {
   return true;
 }
 
+/** Space kept clear between a card's edge and its text, in pixels. */
+export const CARD_PADDING = 12;
+
+/**
+ * Breaks text into lines no wider than maxWidth, as measured by measure, so a
+ * card's text stays inside the card. A single word wider than maxWidth gets a
+ * line of its own.
+ */
+export function fitLines(
+  text: string,
+  maxWidth: number,
+  measure: (text: string) => number,
+): string[] {
+  const lines: string[] = [];
+  for (const word of text.split(' ')) {
+    const last = lines[lines.length - 1];
+    if (last !== undefined && measure(`${last} ${word}`) <= maxWidth) {
+      lines[lines.length - 1] = `${last} ${word}`;
+    } else {
+      lines.push(word);
+    }
+  }
+  return lines;
+}
+
 /** The hint on a card: touch screens have no keys to press. */
 export function gunHint(index: number, touch: boolean): string {
   return touch ? 'Tap' : `Click or press ${index + 1}`;
@@ -493,13 +518,19 @@ function drawCards(
     ctx.lineWidth = 2;
     ctx.strokeRect(button.x, button.y, button.width, button.height);
     const cx = button.x + button.width / 2;
+    const inner = button.width - CARD_PADDING * 2;
+    const measure = (text: string) => ctx.measureText(text).width;
     ctx.fillStyle = colors.text;
     ctx.font = canvasFont('title', 'bold');
+    if (measure(button.name) > inner) ctx.font = canvasFont('body', 'bold');
     ctx.fillText(button.name, cx, button.y + 55);
     ctx.fillStyle = colors.muted;
     ctx.font = canvasFont('small');
-    ctx.fillText(button.blurb, cx, button.y + 90);
-    ctx.fillText(gunHint(i, touch), cx, button.y + 120);
+    const lines = fitLines(button.blurb, inner, measure);
+    const lineHeight = theme.font.small + 4;
+    const top = button.y + 90 - ((lines.length - 1) * lineHeight) / 2;
+    lines.forEach((line, n) => ctx.fillText(line, cx, top + n * lineHeight));
+    ctx.fillText(gunHint(i, touch), cx, button.y + 126);
   });
 }
 

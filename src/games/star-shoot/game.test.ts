@@ -3,6 +3,7 @@ import {
   BONUS_TIME,
   CLOWN_POINTS,
   DIFFICULTIES,
+  CARD_PADDING,
   DIFFICULTY_BUTTONS,
   GUNS,
   GUN_BUTTONS,
@@ -16,6 +17,7 @@ import {
   createState,
   difficultyAt,
   finishHint,
+  fitLines,
   fire,
   gunAt,
   gunBlurb,
@@ -244,6 +246,18 @@ describe('star shoot', () => {
     expect(finishHint(EASY)).toBe('Shoot out 90% of the red in the star');
     expect(finishHint(NORMAL)).toBe('Shoot out 97% of the red in the star');
     expect(finishHint(HARD)).toBe('Shoot out every bit of red in the star');
+  });
+
+  it("wraps a card's text onto lines that fit inside the card", () => {
+    const measure = (text: string) => text.length * 8;
+    const inner = DIFFICULTY_BUTTONS[0].width - CARD_PADDING * 2;
+    const blurb = 'Tiny holes, every bit of red, scores x2';
+    const lines = fitLines(blurb, inner, measure);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join(' ')).toBe(blurb);
+    for (const line of lines) expect(measure(line)).toBeLessThanOrEqual(inner);
+    expect(fitLines('Big holes, scores x1', inner, measure)).toEqual(['Big holes, scores x1']);
+    expect(fitLines('Supercalifragilistic', 40, measure)).toEqual(['Supercalifragilistic']);
   });
 
   it('says Tap on a touch screen and names the key otherwise', () => {
