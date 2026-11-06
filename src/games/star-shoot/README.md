@@ -33,7 +33,8 @@ Your final score is saved to the carnival's score board when the game ends.
 
 ## Files
 
-- `game.ts`: the game logic (`createState`, `chooseGun`, `fire`, `punch`,
-  `shootClown`, `step`, `starScore`) and the `starShoot` entry, the default
+- `game.ts`: the game logic (`createState`, `chooseGun`, `fire`,
+  `pullTrigger`, `releaseTrigger`, `punch`, `shootClown`, `step`, `starScore`,
+  `claimFinalScore`) and the `starShoot` entry, the default
   export the midway finds.
 - `game.test.ts`: tests for the game logic.

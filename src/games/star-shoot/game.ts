@@ -112,6 +112,8 @@ export interface StarShootState {
   spawnIn: number;
   escaped: number;
   clownsBlown: number;
+  /** True once the final score has been handed to the score board. */
+  scoreClaimed: boolean;
 }
 
 function starPoints(): { x: number; y: number }[] {
@@ -165,6 +167,7 @@ export function createState(): StarShootState {
     spawnIn: 0,
     escaped: 0,
     clownsBlown: 0,
+    scoreClaimed: false,
   };
 }
 
@@ -243,6 +246,35 @@ export function fire(
   state.rounds -= 1;
   endShootingIfDone(state);
   return true;
+}
+
+/**
+ * Presses the trigger at the aim point. Every press fires at once; an
+ * automatic gun then keeps firing from `step` until `releaseTrigger`.
+ */
+export function pullTrigger(
+  state: StarShootState,
+  aimX: number,
+  aimY: number,
+  random: () => number = Math.random,
+): boolean {
+  if (!fire(state, aimX, aimY, random)) return false;
+  if (state.phase === 'shooting' && state.gun?.autoInterval) {
+    state.trigger = { x: aimX, y: aimY };
+    state.cooldown = state.gun.autoInterval;
+  }
+  return true;
+}
+
+export function releaseTrigger(state: StarShootState): void {
+  state.trigger = undefined;
+}
+
+/** The final score, once, when the round is over; undefined otherwise. */
+export function claimFinalScore(state: StarShootState): number | undefined {
+  if (state.phase !== 'over' || state.scoreClaimed) return undefined;
+  state.scoreClaimed = true;
+  return state.score;
 }
 
 function endShootingIfDone(state: StarShootState) {
@@ -530,8 +562,11 @@ export const starShoot: CarnivalGame = {
     canvas.height = HEIGHT;
 
     let state = createState();
-    let scoreRecorded = false;
     const aim = { x: WIDTH / 2, y: HEIGHT / 2 };
+    const recordIfOver = () => {
+      const score = claimFinalScore(state);
+      if (score !== undefined) recordScore(starShoot.id, score);
+    };
 
     const toCanvas = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect();
@@ -547,22 +582,19 @@ export const starShoot: CarnivalGame = {
     const onDown = (event: PointerEvent) => {
       Object.assign(aim, toCanvas(event));
       if (state.phase === 'over') {
+        recordIfOver();
         state = createState();
-        scoreRecorded = false;
       } else if (state.phase === 'choosing') {
         const gun = gunAt(aim.x, aim.y);
         if (gun) chooseGun(state, gun.id);
       } else if (state.phase === 'bonus') {
         shootClown(state, aim.x, aim.y);
-      } else if (state.gun?.autoInterval) {
-        state.trigger = { ...aim };
-        state.cooldown = 0;
       } else {
-        fire(state, aim.x, aim.y);
+        pullTrigger(state, aim.x, aim.y);
       }
     };
     const onUp = () => {
-      state.trigger = undefined;
+      releaseTrigger(state);
     };
     const onKey = (event: KeyboardEvent) => {
       const gun = GUNS[Number(event.key) - 1];
@@ -571,6 +603,8 @@ export const starShoot: CarnivalGame = {
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerdown', onDown);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('blur', onUp);
     window.addEventListener('keydown', onKey);
 
     let frame = 0;
@@ -580,10 +614,7 @@ export const starShoot: CarnivalGame = {
       const dt = Math.min((time - last) / 1000, 0.05);
       last = time;
       step(state, dt);
-      if (state.phase === 'over' && !scoreRecorded) {
-        recordScore(starShoot.id, state.score);
-        scoreRecorded = true;
-      }
+      recordIfOver();
       draw(ctx, state, aim);
       frame = requestAnimationFrame(loop);
     };
@@ -591,9 +622,12 @@ export const starShoot: CarnivalGame = {
 
     return () => {
       cancelAnimationFrame(frame);
+      recordIfOver();
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('blur', onUp);
       window.removeEventListener('keydown', onKey);
     };
   },

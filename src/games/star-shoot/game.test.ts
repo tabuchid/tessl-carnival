@@ -7,12 +7,15 @@ import {
   MAX_ESCAPES,
   STAR,
   chooseGun,
+  claimFinalScore,
   clownOnScreen,
   createState,
   fire,
   gunAt,
   isInStar,
+  pullTrigger,
   punch,
+  releaseTrigger,
   shootClown,
   starScore,
   step,
@@ -135,6 +138,42 @@ describe('star shoot', () => {
     const rounds = state.rounds;
     step(state, 0.25, centre);
     expect(state.rounds).toBe(rounds);
+  });
+
+  it('fires an automatic gun on the press, even if it is released before the next step', () => {
+    const state = shooting('repeater');
+    expect(pullTrigger(state, STAR.x, STAR.y, centre)).toBe(true);
+    expect(state.rounds).toBe(GUNS[1].rounds - 1);
+    releaseTrigger(state);
+    step(state, 0.25, centre);
+    expect(state.rounds).toBe(GUNS[1].rounds - 1);
+  });
+
+  it('waits the firing interval after the press before the next automatic shot', () => {
+    const state = shooting('repeater');
+    pullTrigger(state, STAR.x, STAR.y, centre);
+    step(state, GUNS[1].autoInterval / 2, centre);
+    expect(state.rounds).toBe(GUNS[1].rounds - 1);
+    step(state, GUNS[1].autoInterval / 2, centre);
+    expect(state.rounds).toBe(GUNS[1].rounds - 2);
+  });
+
+  it('fires once per press with a gun that is not automatic', () => {
+    const state = shooting('plinker');
+    pullTrigger(state, STAR.x, STAR.y, centre);
+    expect(state.trigger).toBeUndefined();
+    step(state, 0.25, centre);
+    expect(state.rounds).toBe(GUNS[0].rounds - 1);
+  });
+
+  it('hands over the final score exactly once, and only when the round is over', () => {
+    const state = shooting('plinker');
+    expect(claimFinalScore(state)).toBeUndefined();
+    state.rounds = 1;
+    fire(state, STAR.x, STAR.y, centre);
+    expect(state.phase).toBe('over');
+    expect(claimFinalScore(state)).toBe(state.score);
+    expect(claimFinalScore(state)).toBeUndefined();
   });
 
   describe('bonus round', () => {
