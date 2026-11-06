@@ -156,7 +156,10 @@ To do it by hand instead:
 3. **Pages.** Go to **Settings → Pages**, set **Source** to **GitHub Actions**,
    then re-run the **Deploy to GitHub Pages** workflow or merge anything to
    `main`. Your carnival will be at
-   `https://<your-username>.github.io/tessl-carnival/`.
+   `https://<your-username>.github.io/tessl-carnival/`. Each open pull request
+   into `main` from a branch in your fork also gets a playable preview at
+   `pr/<number>/` under that link, and a comment on the pull request with the
+   link. A preview goes away when its pull request closes.
 4. **Interactions.** Go to **Settings → Moderation options → Interaction
    limits**, and limit interactions to repository collaborators for six months.
 5. **Outside pull requests.** Go to **Settings → Actions → General**, and

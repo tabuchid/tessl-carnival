@@ -1,24 +1,33 @@
 name: Deploy to GitHub Pages
 
+# The site is main at the root plus a preview of every open pull request into
+# main from a branch in this repository, at pr/<number>/. Pages replaces the
+# whole site on each deploy, so every run builds all of them. pull_request_target
+# runs in main's context, which the github-pages environment accepts.
 on:
   push:
     branches: [main]
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
+# Only runs that deploy share the pages group, so a pull request event that is
+# skipped below can't cancel a deploy in progress.
 concurrency:
-  group: pages
+  group: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.base.ref == github.event.repository.default_branch) && 'pages' || format('pages-skipped-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
   # Forks start with Pages switched off. Skip the deploy with a note rather than
   # failing on every merge until someone turns it on.
   check:
+    # Only pull requests into main: the deploy runs in the base branch's context.
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
+    permissions:
+      pages: read
     outputs:
       enabled: ${{ steps.pages.outputs.enabled }}
     steps:
@@ -44,24 +53,195 @@ jobs:
               ;;
           esac
 
-  deploy:
+  # Open pull requests into main whose branch is in this repository: the same
+  # pull requests whose events trigger a deploy. A pull request from another
+  # fork is never built.
+  list:
     needs: check
     if: needs.check.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pull-requests: read
+    outputs:
+      previews: ${{ steps.list.outputs.previews }}
+    steps:
+      # At most 100 pull requests get a preview. This fork never has that many
+      # open, and a matrix can't run more than 256 jobs anyway.
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          previews=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BASE" --state open --limit 100 \
+            --json number,headRefOid,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not) | {number, sha: .headRefOid}]' | jq --compact-output .)
+          echo "$previews"
+          echo "previews=$previews" >> "$GITHUB_OUTPUT"
+
+  main:
+    needs: check
+    if: needs.check.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - uses: actions/configure-pages@v5
+      - run: npm ci && npm run build
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-main
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Each pull request builds in its own job on its own runner, so its code can't
+  # touch main's build or another preview. A preview that fails, has no dist or
+  # runs past the time limit is left out; main and the other previews deploy.
+  # Previews start after main's build is uploaded. The build runs in a container,
+  # on a copy of the tree without .git, with none of the job's tokens, so pull
+  # request code can't upload an artifact or write to main's npm cache. Only the
+  # upload step below, which names the artifact from the matrix, can.
+  preview:
+    needs: [list, main]
+    if: needs.list.outputs.previews != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.previews) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.pr.sha }}
+          persist-credentials: false
+      - run: |
+          node=$(cat .nvmrc)
+          if ! [[ $node =~ ^[0-9][0-9.]*$ ]]; then
+            echo "::error::.nvmrc should hold a Node version number, not '$node'."
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/app"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/app"
+          docker run --rm --volume "$RUNNER_TEMP/app:/app" --workdir /app "node:$node" sh -c 'npm ci && npm run build'
+      # The build's output is pull request code's to shape, and the upload reads
+      # it on the host, so a link could point it at the host's files. Anything
+      # in dist that isn't a plain file or directory skips the preview.
+      - env:
+          NUMBER: ${{ matrix.pr.number }}
+        run: |
+          dist=$RUNNER_TEMP/app/dist
+          if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -n "$(find "$dist" ! -type f ! -type d -print -quit)" ]; then
+            echo "::warning title=Preview skipped::Pull request #$NUMBER has no dist, or its dist holds a symlink or another file that isn't a regular file or directory, so it has no preview this time."
+            exit 1
+          fi
+          cp -RP "$dist" "$RUNNER_TEMP/preview"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.pr.number }}
+          path: ${{ runner.temp }}/preview
+          if-no-files-found: error
+          retention-days: 1
+
+  # Puts main and the previews that built into one site. Runs no pull request
+  # code. Main's build is fetched by id and the Pages artifact gets a random
+  # name, so an artifact a preview job uploads can't stand in for either. Each
+  # preview is downloaded on its own, so one that fails to download is skipped.
+  build:
+    needs: [list, main, preview]
+    if: ${{ !cancelled() && needs.list.result == 'success' && needs.main.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      previews: ${{ steps.site.outputs.previews }}
+      artifact: ${{ steps.site.outputs.artifact }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.main.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/site
+      - id: site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LISTED: ${{ needs.list.outputs.previews }}
+        run: |
+          site=$RUNNER_TEMP/site
+          mkdir -p "$site/pr"
+          built=()
+          for number in $(jq -r '.[].number' <<< "$LISTED"); do
+            dir=$RUNNER_TEMP/previews/$number
+            if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "preview-$number" --dir "$dir" &&
+              [ -f "$dir/index.html" ] && [ ! -L "$dir/index.html" ] &&
+              [ -z "$(find "$dir" ! -type f ! -type d -print -quit)" ]; then
+              cp -RP "$dir" "$site/pr/$number"
+              built+=("$number")
+            else
+              echo "::warning title=Preview skipped::Pull request #$number didn't build, its build couldn't be downloaded, or it holds a symlink, so it has no preview this time."
+            fi
+          done
+          echo "artifact=github-pages-$(openssl rand -hex 16)" >> "$GITHUB_OUTPUT"
+          echo "previews=$(jq --compact-output --null-input '$ARGS.positional | map(tonumber)' --args "${built[@]}")" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          name: ${{ steps.site.outputs.artifact }}
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ needs.build.outputs.artifact }}
+
+  # One comment per previewed pull request, posted the first time and edited
+  # in place after that.
+  comment:
+    needs: [build, deploy]
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.build.outputs.previews != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+          PREVIEWS: ${{ needs.build.outputs.previews }}
+        run: |
+          marker='<!-- carnival-preview -->'
+          for number in $(jq -r '.[]' <<< "$PREVIEWS"); do
+            body=$(printf '%s\nPlay this pull request at %spr/%s/\n\nIt redeploys on every push, and goes away when the pull request closes.' \
+              "$marker" "${PAGE_URL%/}/" "$number")
+            existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$number/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
+            if [ -z "$existing" ]; then
+              gh api --silent "repos/$GITHUB_REPOSITORY/issues/$number/comments" -f body="$body"
+            else
+              gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$body"
+            fi
+          done
