@@ -25,7 +25,7 @@ export const GUNS: readonly Gun[] = [
     blurb: '100 BBs, dead accurate',
     rounds: 100,
     pellets: 1,
-    holeRadius: 7,
+    holeRadius: 14,
     spread: 0,
     autoInterval: 0,
   },
@@ -35,7 +35,7 @@ export const GUNS: readonly Gun[] = [
     blurb: '250 BBs, hold to fire, wobbly',
     rounds: 250,
     pellets: 1,
-    holeRadius: 6,
+    holeRadius: 12,
     spread: 10,
     autoInterval: 0.08,
   },
@@ -45,7 +45,7 @@ export const GUNS: readonly Gun[] = [
     blurb: '30 shells of 6 BBs each',
     rounds: 30,
     pellets: 6,
-    holeRadius: 6,
+    holeRadius: 12,
     spread: 22,
     autoInterval: 0,
   },
@@ -60,11 +60,14 @@ export const GUN_BUTTONS = GUNS.map((gun, i) => ({
   height: 140,
 }));
 
-export const STAR = { x: WIDTH / 2, y: 250, outer: 80, inner: 80 * 0.382 } as const;
+export const STAR = { x: WIDTH / 2, y: 260, outer: 150, inner: 150 * 0.382 } as const;
 export const CELL = 4;
 const GRID_X = STAR.x - STAR.outer;
 const GRID_Y = STAR.y - STAR.outer;
 const GRID_SIZE = Math.ceil((STAR.outer * 2) / CELL);
+
+/** Share of the red that counts as the star shot out, so stray specks don't block the bonus. */
+export const SHOT_OUT_AT = 0.97;
 
 export const BONUS_TIME = 30;
 export const CLOWN_POINTS = 50;
@@ -180,6 +183,11 @@ export function chooseGun(state: StarShootState, gunId: string): boolean {
   return true;
 }
 
+/** The hint on a gun's card: touch screens have no keys to press. */
+export function gunHint(index: number, touch: boolean): string {
+  return touch ? 'Tap' : `Click or press ${index + 1}`;
+}
+
 /** The gun whose button is at (x, y) on the choosing screen, if any. */
 export function gunAt(x: number, y: number): Gun | undefined {
   return GUN_BUTTONS.find((b) => x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height)
@@ -189,6 +197,11 @@ export function gunAt(x: number, y: number): Gun | undefined {
 /** Share of the star's red that has been shot out, from 0 to 1. */
 export function clearedFraction(state: StarShootState): number {
   return state.redTotal === 0 ? 1 : 1 - state.redLeft / state.redTotal;
+}
+
+/** True once enough red is gone for the star to count as shot out. */
+export function isShotOut(state: StarShootState): boolean {
+  return clearedFraction(state) >= SHOT_OUT_AT - 1e-9;
 }
 
 /** 10 points for every whole 1% of red shot out. */
@@ -278,7 +291,7 @@ export function claimFinalScore(state: StarShootState): number | undefined {
 }
 
 function endShootingIfDone(state: StarShootState) {
-  if (state.redLeft === 0) {
+  if (isShotOut(state)) {
     // Star shot out: every round left over is worth 10, then the clowns come.
     state.score = starScore(state) + 10 * state.rounds;
     state.phase = 'bonus';
@@ -348,7 +361,7 @@ export function step(state: StarShootState, dt: number, random: () => number = M
   }
 }
 
-function drawChoosing(ctx: CanvasRenderingContext2D) {
+function drawChoosing(ctx: CanvasRenderingContext2D, touch: boolean) {
   const { colors } = theme;
   ctx.textAlign = 'center';
   ctx.fillStyle = colors.accent;
@@ -370,7 +383,7 @@ function drawChoosing(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = colors.muted;
     ctx.font = canvasFont('small');
     ctx.fillText(button.gun.blurb, cx, button.y + 90);
-    ctx.fillText(`Click or press ${i + 1}`, cx, button.y + 120);
+    ctx.fillText(gunHint(i, touch), cx, button.y + 120);
   });
 }
 
@@ -382,8 +395,9 @@ function drawStar(
   const { colors } = theme;
   ctx.fillStyle = colors.wood;
   ctx.fillRect(STAR.x - 4, STAR.y + STAR.outer + 40, 8, HEIGHT);
+  const paper = STAR.outer + 40;
   ctx.fillStyle = colors.stripeB;
-  ctx.fillRect(STAR.x - 130, STAR.y - 130, 260, 260);
+  ctx.fillRect(STAR.x - paper, STAR.y - paper, paper * 2, paper * 2);
 
   ctx.fillStyle = colors.stripeA;
   state.red.forEach((isRed, i) => {
@@ -514,7 +528,12 @@ function drawBonus(
   );
 }
 
-function draw(ctx: CanvasRenderingContext2D, state: StarShootState, aim: { x: number; y: number }) {
+function draw(
+  ctx: CanvasRenderingContext2D,
+  state: StarShootState,
+  aim: { x: number; y: number },
+  touch: boolean,
+) {
   const { colors } = theme;
   ctx.fillStyle = colors.background;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -527,7 +546,7 @@ function draw(ctx: CanvasRenderingContext2D, state: StarShootState, aim: { x: nu
     }
   }
 
-  if (state.phase === 'choosing') drawChoosing(ctx);
+  if (state.phase === 'choosing') drawChoosing(ctx, touch);
   else if (state.phase === 'bonus') drawBonus(ctx, state, aim);
   else drawStar(ctx, state, aim);
 
@@ -539,10 +558,9 @@ function draw(ctx: CanvasRenderingContext2D, state: StarShootState, aim: { x: nu
     ctx.textAlign = 'center';
     ctx.fillStyle = colors.accent;
     ctx.font = canvasFont('title', 'bold');
-    const headline =
-      state.redLeft === 0
-        ? `Star shot out! ${state.clownsBlown} clowns down. You scored ${state.score}`
-        : `Out of BBs! You scored ${state.score}`;
+    const headline = isShotOut(state)
+      ? `Star shot out! ${state.clownsBlown} clowns down. You scored ${state.score}`
+      : `Out of BBs! You scored ${state.score}`;
     ctx.fillText(headline, WIDTH / 2, HEIGHT / 2);
     ctx.fillStyle = colors.text;
     ctx.font = canvasFont('body');
@@ -563,6 +581,7 @@ export const starShoot: CarnivalGame = {
 
     let state = createState();
     const aim = { x: WIDTH / 2, y: HEIGHT / 2 };
+    let touch = window.matchMedia('(pointer: coarse)').matches;
     const recordIfOver = () => {
       const score = claimFinalScore(state);
       if (score !== undefined) recordScore(starShoot.id, score);
@@ -580,6 +599,7 @@ export const starShoot: CarnivalGame = {
       if (state.trigger) Object.assign(state.trigger, aim);
     };
     const onDown = (event: PointerEvent) => {
+      touch = event.pointerType !== 'mouse';
       Object.assign(aim, toCanvas(event));
       if (state.phase === 'over') {
         recordIfOver();
@@ -615,7 +635,7 @@ export const starShoot: CarnivalGame = {
       last = time;
       step(state, dt);
       recordIfOver();
-      draw(ctx, state, aim);
+      draw(ctx, state, aim, touch);
       frame = requestAnimationFrame(loop);
     };
     frame = requestAnimationFrame(loop);

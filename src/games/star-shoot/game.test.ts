@@ -5,6 +5,7 @@ import {
   GUNS,
   GUN_BUTTONS,
   MAX_ESCAPES,
+  SHOT_OUT_AT,
   STAR,
   chooseGun,
   claimFinalScore,
@@ -12,7 +13,9 @@ import {
   createState,
   fire,
   gunAt,
+  gunHint,
   isInStar,
+  isShotOut,
   pullTrigger,
   punch,
   releaseTrigger,
@@ -127,6 +130,33 @@ describe('star shoot', () => {
     expect(state.redLeft).toBe(0);
     expect(state.phase).toBe('bonus');
     expect(state.score).toBe(1000 + 10 * 39);
+  });
+
+  it('counts the star as shot out at 97% cleared, specks and all', () => {
+    const state = shooting();
+    state.redLeft = Math.ceil(state.redTotal * (1 - SHOT_OUT_AT)) + 1;
+    state.rounds = 1;
+    fire(state, 20, 450, centre);
+    expect(isShotOut(state)).toBe(false);
+    expect(state.phase).toBe('over');
+
+    const specks = shooting();
+    specks.redLeft = Math.floor(specks.redTotal * (1 - SHOT_OUT_AT)) + 1;
+    specks.rounds = 20;
+    fire(specks, STAR.x, STAR.y, centre);
+    expect(specks.redLeft).toBeGreaterThan(0);
+    expect(isShotOut(specks)).toBe(true);
+    expect(specks.phase).toBe('bonus');
+    expect(specks.score).toBe(starScore(specks) + 10 * 19);
+  });
+
+  it('gives every gun a hole big enough for a phone', () => {
+    for (const gun of GUNS) expect(gun.holeRadius).toBeGreaterThanOrEqual(12);
+  });
+
+  it('says Tap on a touch screen and names the key otherwise', () => {
+    expect(gunHint(0, true)).toBe('Tap');
+    expect(gunHint(2, false)).toBe('Click or press 3');
   });
 
   it('keeps firing an automatic gun while the trigger is held', () => {
