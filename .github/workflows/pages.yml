@@ -106,8 +106,10 @@ jobs:
   # Each pull request builds in its own job on its own runner, so its code can't
   # touch main's build or another preview. A preview that fails, has no dist or
   # runs past the time limit is left out; main and the other previews deploy.
-  # Previews start after main's build is uploaded. No npm cache here: pull
-  # request code must not write to main's cache.
+  # Previews start after main's build is uploaded. The build runs in a container,
+  # on a copy of the tree without .git, with none of the job's tokens, so pull
+  # request code can't upload an artifact or write to main's npm cache. Only the
+  # upload step below, which names the artifact from the matrix, can.
   preview:
     needs: [list, main]
     if: needs.list.outputs.previews != '[]'
@@ -125,25 +127,32 @@ jobs:
         with:
           ref: ${{ matrix.pr.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - run: npm ci && npm run build
+      - run: |
+          node=$(cat .nvmrc)
+          if ! [[ $node =~ ^[0-9][0-9.]*$ ]]; then
+            echo "::error::.nvmrc should hold a Node version number, not '$node'."
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/app"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/app"
+          docker run --rm --volume "$RUNNER_TEMP/app:/app" --workdir /app "node:$node" sh -c 'npm ci && npm run build'
       - uses: actions/upload-artifact@v4
         with:
           name: preview-${{ matrix.pr.number }}
-          path: dist
+          path: ${{ runner.temp }}/app/dist
           if-no-files-found: error
           retention-days: 1
 
   # Puts main and the previews that built into one site. Runs no pull request
   # code. Main's build is fetched by id and the Pages artifact gets a random
-  # name, so an artifact a preview job uploads can't stand in for either.
+  # name, so an artifact a preview job uploads can't stand in for either. Each
+  # preview is downloaded on its own, so one that fails to download is skipped.
   build:
     needs: [list, main, preview]
     if: ${{ !cancelled() && needs.list.result == 'success' && needs.main.result == 'success' }}
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      actions: read
     outputs:
       previews: ${{ steps.site.outputs.previews }}
       artifact: ${{ steps.site.outputs.artifact }}
@@ -153,24 +162,22 @@ jobs:
           artifact-ids: ${{ needs.main.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/site
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: preview-*
-          path: ${{ runner.temp }}/previews
       - id: site
         env:
+          GH_TOKEN: ${{ github.token }}
           LISTED: ${{ needs.list.outputs.previews }}
         run: |
           site=$RUNNER_TEMP/site
           mkdir -p "$site/pr"
           built=()
           for number in $(jq -r '.[].number' <<< "$LISTED"); do
-            dir=$RUNNER_TEMP/previews/preview-$number
-            if [ -f "$dir/index.html" ]; then
+            dir=$RUNNER_TEMP/previews/$number
+            if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "preview-$number" --dir "$dir" &&
+              [ -f "$dir/index.html" ]; then
               cp -R "$dir" "$site/pr/$number"
               built+=("$number")
             else
-              echo "::warning title=Preview skipped::Pull request #$number didn't build, so it has no preview this time."
+              echo "::warning title=Preview skipped::Pull request #$number didn't build or its build couldn't be downloaded, so it has no preview this time."
             fi
           done
           echo "artifact=github-pages-$(openssl rand -hex 16)" >> "$GITHUB_OUTPUT"
