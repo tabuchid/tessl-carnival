@@ -1,9 +1,9 @@
 name: Deploy to GitHub Pages
 
-# The site is main at the root plus a preview of every open pull request from a
-# branch in this repository at pr/<number>/. Pages replaces the whole site on
-# each deploy, so every run builds all of them. pull_request_target runs in
-# main's context, which the github-pages environment accepts.
+# The site is main at the root plus a preview of every open pull request into
+# main from a branch in this repository, at pr/<number>/. Pages replaces the
+# whole site on each deploy, so every run builds all of them. pull_request_target
+# runs in main's context, which the github-pages environment accepts.
 on:
   push:
     branches: [main]
@@ -13,8 +13,10 @@ on:
 
 permissions: {}
 
+# Only runs that deploy share the pages group, so a pull request event that is
+# skipped below can't cancel a deploy in progress.
 concurrency:
-  group: pages
+  group: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.base.ref == github.event.repository.default_branch) && 'pages' || format('pages-skipped-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -51,18 +53,40 @@ jobs:
               ;;
           esac
 
-  # Builds pull request code, so it gets a read-only token and nothing else.
-  build:
+  # Open pull requests into main whose branch is in this repository: the same
+  # pull requests whose events trigger a deploy. A pull request from another
+  # fork is never built.
+  list:
+    needs: check
+    if: needs.check.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      previews: ${{ steps.list.outputs.previews }}
+    steps:
+      # At most 100 pull requests get a preview. This fork never has that many
+      # open, and a matrix can't run more than 256 jobs anyway.
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          previews=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BASE" --state open --limit 100 \
+            --json number,headRefOid,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not) | {number, sha: .headRefOid}]' | jq --compact-output .)
+          echo "$previews"
+          echo "previews=$previews" >> "$GITHUB_OUTPUT"
+
+  main:
     needs: check
     if: needs.check.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
-      previews: ${{ steps.site.outputs.previews }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      # The default branch, never the pull request's merge ref.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -70,27 +94,95 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      # Open pull requests whose branch is in this repository. A pull request
-      # from another fork is never built.
-      - name: List pull requests to preview
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --json number,headRefOid,isCrossRepository \
-            --jq '.[] | select(.isCrossRepository | not) | "\(.number) \(.headRefOid)"' \
-            > "$RUNNER_TEMP/previews.txt"
-          cat "$RUNNER_TEMP/previews.txt"
+      - run: npm ci && npm run build
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-main
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Each pull request builds in its own job on its own runner, so its code can't
+  # touch main's build or another preview. A preview that fails, has no dist or
+  # runs past the time limit is left out; main and the other previews deploy.
+  # Previews start after main's build is uploaded. No npm cache here: pull
+  # request code must not write to main's cache.
+  preview:
+    needs: [list, main]
+    if: needs.list.outputs.previews != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.previews) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.pr.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.pr.number }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Puts main and the previews that built into one site. Runs no pull request
+  # code. Main's build is fetched by id and the Pages artifact gets a random
+  # name, so an artifact a preview job uploads can't stand in for either.
+  build:
+    needs: [list, main, preview]
+    if: ${{ !cancelled() && needs.list.result == 'success' && needs.main.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      previews: ${{ steps.site.outputs.previews }}
+      artifact: ${{ steps.site.outputs.artifact }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.main.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/site
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: preview-*
+          path: ${{ runner.temp }}/previews
       - id: site
+        env:
+          LISTED: ${{ needs.list.outputs.previews }}
         run: |
-          scripts/build-pages-site.sh "$RUNNER_TEMP/previews.txt" "$RUNNER_TEMP/site" "$RUNNER_TEMP/built.txt"
-          echo "previews=$(jq --raw-input --slurp --compact-output 'split("\n") | map(select(length > 0) | tonumber)' "$RUNNER_TEMP/built.txt")" >> "$GITHUB_OUTPUT"
+          site=$RUNNER_TEMP/site
+          mkdir -p "$site/pr"
+          built=()
+          for number in $(jq -r '.[].number' <<< "$LISTED"); do
+            dir=$RUNNER_TEMP/previews/preview-$number
+            if [ -f "$dir/index.html" ]; then
+              cp -R "$dir" "$site/pr/$number"
+              built+=("$number")
+            else
+              echo "::warning title=Preview skipped::Pull request #$number didn't build, so it has no preview this time."
+            fi
+          done
+          echo "artifact=github-pages-$(openssl rand -hex 16)" >> "$GITHUB_OUTPUT"
+          echo "previews=$(jq --compact-output --null-input '$ARGS.positional | map(tonumber)' --args "${built[@]}")" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@v3
         with:
+          name: ${{ steps.site.outputs.artifact }}
           path: ${{ runner.temp }}/site
 
   deploy:
     needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -104,12 +196,14 @@ jobs:
       - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ needs.build.outputs.artifact }}
 
   # One comment per previewed pull request, posted the first time and edited
   # in place after that.
   comment:
     needs: [build, deploy]
-    if: needs.build.outputs.previews != '[]'
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.build.outputs.previews != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
