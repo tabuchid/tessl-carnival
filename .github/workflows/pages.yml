@@ -136,10 +136,22 @@ jobs:
           mkdir "$RUNNER_TEMP/app"
           git archive HEAD | tar -x -C "$RUNNER_TEMP/app"
           docker run --rm --volume "$RUNNER_TEMP/app:/app" --workdir /app "node:$node" sh -c 'npm ci && npm run build'
+      # The build's output is pull request code's to shape, and the upload reads
+      # it on the host, so a link could point it at the host's files. Anything
+      # in dist that isn't a plain file or directory skips the preview.
+      - env:
+          NUMBER: ${{ matrix.pr.number }}
+        run: |
+          dist=$RUNNER_TEMP/app/dist
+          if [ -L "$dist" ] || [ ! -d "$dist" ] || [ -n "$(find "$dist" ! -type f ! -type d -print -quit)" ]; then
+            echo "::warning title=Preview skipped::Pull request #$NUMBER has no dist, or its dist holds a symlink or another file that isn't a regular file or directory, so it has no preview this time."
+            exit 1
+          fi
+          cp -RP "$dist" "$RUNNER_TEMP/preview"
       - uses: actions/upload-artifact@v4
         with:
           name: preview-${{ matrix.pr.number }}
-          path: ${{ runner.temp }}/app/dist
+          path: ${{ runner.temp }}/preview
           if-no-files-found: error
           retention-days: 1
 
@@ -173,11 +185,12 @@ jobs:
           for number in $(jq -r '.[].number' <<< "$LISTED"); do
             dir=$RUNNER_TEMP/previews/$number
             if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "preview-$number" --dir "$dir" &&
-              [ -f "$dir/index.html" ]; then
-              cp -R "$dir" "$site/pr/$number"
+              [ -f "$dir/index.html" ] && [ ! -L "$dir/index.html" ] &&
+              [ -z "$(find "$dir" ! -type f ! -type d -print -quit)" ]; then
+              cp -RP "$dir" "$site/pr/$number"
               built+=("$number")
             else
-              echo "::warning title=Preview skipped::Pull request #$number didn't build or its build couldn't be downloaded, so it has no preview this time."
+              echo "::warning title=Preview skipped::Pull request #$number didn't build, its build couldn't be downloaded, or it holds a symlink, so it has no preview this time."
             fi
           done
           echo "artifact=github-pages-$(openssl rand -hex 16)" >> "$GITHUB_OUTPUT"
