@@ -272,3 +272,131 @@ kbd {
   cursor: crosshair;
   touch-action: none;
 }
+
+.rotate-hint {
+  display: none;
+}
+
+/* Phones: give the game as much of the visible screen as it can get. Portrait
+   phones match on width, landscape phones on their short height. */
+@media (max-width: 720px), (max-height: 500px) and (pointer: coarse) {
+  body[data-view='game'] {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body[data-view='game'] .awning {
+    padding: 6px 8px 12px;
+  }
+
+  body[data-view='game'] .brand {
+    padding: 2px 10px;
+    font-size: 16px;
+  }
+
+  body[data-view='game'] main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+    padding: 4px 8px 8px;
+  }
+
+  .game {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .game-header {
+    flex-wrap: nowrap;
+    gap: 12px;
+    margin-bottom: 6px;
+    font-size: 14px;
+  }
+
+  .game-header a {
+    flex: none;
+    padding: 4px 0;
+  }
+
+  .game-header h1 {
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The stage is the space left over; the canvas takes the largest 800x500
+     box that fits inside it, centred. */
+  .game-stage {
+    display: grid;
+    flex: 1;
+    place-items: center;
+    min-height: 0;
+    container-type: size;
+  }
+
+  .game-stage canvas {
+    width: min(100cqw, 160cqh);
+    height: auto;
+    aspect-ratio: 800 / 500;
+  }
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .rotate-hint {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 6px;
+    padding: 6px 10px;
+    border: 2px solid var(--color-accent);
+    border-radius: var(--radius);
+    color: var(--color-muted);
+    font-size: 14px;
+  }
+
+  .rotate-hint[hidden] {
+    display: none;
+  }
+
+  .rotate-hint button {
+    flex: none;
+    padding: 4px 12px;
+    border: 0;
+    border-radius: var(--radius);
+    background: var(--color-accent);
+    color: var(--color-background);
+    font: inherit;
+    font-weight: bold;
+  }
+}
+
+/* Landscape phones: drop the awning so the game gets the full height. The
+   back link in the game header still leads to the midway. */
+@media (max-height: 500px) and (orientation: landscape) and (pointer: coarse) {
+  body[data-view='game'] .awning {
+    display: none;
+  }
+
+  body[data-view='game'] main {
+    padding: 2px 8px 4px;
+  }
+
+  .game-header {
+    margin-bottom: 2px;
+  }
+
+  .game-header a {
+    padding: 2px 0;
+  }
+}

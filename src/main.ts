@@ -9,6 +9,7 @@ applyTheme();
 
 const app = document.querySelector<HTMLElement>('#app')!;
 let stop: (() => void) | undefined;
+let rotateHintDismissed = false;
 
 function bestText(game: CarnivalGame): string {
   const best = bestScore(game.id);
@@ -98,9 +99,21 @@ function renderGame(game: CarnivalGame) {
         <a href="#/">← Back to the midway</a>
         <h1></h1>
       </div>
-      <canvas></canvas>
+      <p class="rotate-hint">
+        Turn your phone sideways for a bigger game.
+        <button type="button">Got it</button>
+      </p>
+      <div class="game-stage">
+        <canvas></canvas>
+      </div>
     </section>`;
   app.querySelector('h1')!.textContent = game.name;
+  const hint = app.querySelector<HTMLElement>('.rotate-hint')!;
+  hint.hidden = rotateHintDismissed;
+  hint.querySelector('button')!.addEventListener('click', () => {
+    rotateHintDismissed = true;
+    hint.hidden = true;
+  });
   stop = game.start(app.querySelector('canvas')!);
 }
 
