@@ -5,12 +5,13 @@ const { width: WIDTH, height: HEIGHT } = theme.canvas;
 export interface Gun {
   id: string;
   name: string;
+  /** What the card says after the ammo count. */
   blurb: string;
-  /** BBs (or shells) in the gun for the whole round. */
+  /** BBs (or shells) in the gun for the whole round on Hard. */
   rounds: number;
   /** BBs fired per pull of the trigger. */
   pellets: number;
-  /** Radius of the hole one BB tears in the paper, in pixels. */
+  /** Radius of the hole one BB tears in the paper on Hard, in pixels. */
   holeRadius: number;
   /** How far a BB can land from the aim point, in pixels. */
   spread: number;
@@ -22,52 +23,99 @@ export const GUNS: readonly Gun[] = [
   {
     id: 'plinker',
     name: 'Plinker',
-    blurb: '100 BBs, dead accurate',
+    blurb: 'BBs, dead accurate',
     rounds: 100,
     pellets: 1,
-    holeRadius: 14,
+    holeRadius: 7,
     spread: 0,
     autoInterval: 0,
   },
   {
     id: 'repeater',
     name: 'Repeater',
-    blurb: '250 BBs, hold to fire, wobbly',
+    blurb: 'BBs, hold to fire, wobbly',
     rounds: 250,
     pellets: 1,
-    holeRadius: 12,
+    holeRadius: 6,
     spread: 10,
     autoInterval: 0.08,
   },
   {
     id: 'scattergun',
     name: 'Scattergun',
-    blurb: '30 shells of 6 BBs each',
+    blurb: 'shells of 6 BBs each',
     rounds: 30,
     pellets: 6,
-    holeRadius: 12,
+    holeRadius: 6,
     spread: 22,
     autoInterval: 0,
   },
 ];
 
-/** The gun buttons on the choosing screen. */
-export const GUN_BUTTONS = GUNS.map((gun, i) => ({
-  gun,
-  x: 70 + i * 230,
-  y: 200,
-  width: 200,
-  height: 140,
+export interface Difficulty {
+  id: string;
+  name: string;
+  blurb: string;
+  /** Each gun's ammo is multiplied by this. */
+  ammoScale: number;
+  /** Each gun's hole radius is multiplied by this. */
+  holeScale: number;
+  /** Share of the red that counts as the star shot out, so stray specks don't block the bonus. */
+  shotOutAt: number;
+  /** Every point scored is multiplied by this, so the shared high score stays fair. */
+  multiplier: number;
+}
+
+export const DIFFICULTIES: readonly Difficulty[] = [
+  {
+    id: 'easy',
+    name: 'Easy',
+    blurb: 'Double ammo, huge holes',
+    ammoScale: 2,
+    holeScale: 3,
+    shotOutAt: 0.9,
+    multiplier: 0.5,
+  },
+  {
+    id: 'normal',
+    name: 'Normal',
+    blurb: 'Big holes',
+    ammoScale: 1,
+    holeScale: 2,
+    shotOutAt: 0.97,
+    multiplier: 1,
+  },
+  {
+    id: 'hard',
+    name: 'Hard',
+    blurb: 'Tiny holes, every bit of red',
+    ammoScale: 1,
+    holeScale: 1,
+    shotOutAt: 1,
+    multiplier: 2,
+  },
+];
+
+const cards = <T>(items: readonly T[]) =>
+  items.map((item, i) => ({ item, x: 70 + i * 230, y: 200, width: 200, height: 140 }));
+
+/** The difficulty buttons on the first screen. */
+export const DIFFICULTY_BUTTONS = cards(DIFFICULTIES).map(({ item, ...box }) => ({
+  difficulty: item,
+  ...box,
 }));
+
+/** The gun buttons on the choosing screen. */
+export const GUN_BUTTONS = cards(GUNS).map(({ item, ...box }) => ({ gun: item, ...box }));
+
+/** The button on the gun screen that goes back to the difficulty choice. */
+export const CHANGE_DIFFICULTY_BUTTON = { x: 300, y: 380, width: 200, height: 44 };
 
 export const STAR = { x: WIDTH / 2, y: 260, outer: 150, inner: 150 * 0.382 } as const;
 export const CELL = 4;
 const GRID_X = STAR.x - STAR.outer;
 const GRID_Y = STAR.y - STAR.outer;
 const GRID_SIZE = Math.ceil((STAR.outer * 2) / CELL);
-
-/** Share of the red that counts as the star shot out, so stray specks don't block the bonus. */
-export const SHOT_OUT_AT = 0.97;
 
 export const BONUS_TIME = 30;
 export const CLOWN_POINTS = 50;
@@ -97,7 +145,8 @@ export interface Boom {
 }
 
 export interface StarShootState {
-  phase: 'choosing' | 'shooting' | 'bonus' | 'over';
+  phase: 'difficulty' | 'choosing' | 'shooting' | 'bonus' | 'over';
+  difficulty: Difficulty | undefined;
   gun: Gun | undefined;
   rounds: number;
   /** One flag per grid cell: true while that bit of the star is still red. */
@@ -147,14 +196,19 @@ function cellCentre(index: number) {
   };
 }
 
-export function createState(): StarShootState {
+/**
+ * A fresh round. With a difficulty, such as the last one played, it starts on
+ * the gun choice; without one, it starts on the difficulty choice.
+ */
+export function createState(difficulty?: Difficulty): StarShootState {
   const red = Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => {
     const { x, y } = cellCentre(i);
     return isInStar(x, y);
   });
   const redTotal = red.filter(Boolean).length;
   return {
-    phase: 'choosing',
+    phase: difficulty ? 'choosing' : 'difficulty',
+    difficulty,
     gun: undefined,
     rounds: 0,
     red,
@@ -174,18 +228,69 @@ export function createState(): StarShootState {
   };
 }
 
+export function chooseDifficulty(state: StarShootState, difficultyId: string): boolean {
+  const difficulty = DIFFICULTIES.find((d) => d.id === difficultyId);
+  if (state.phase !== 'difficulty' || !difficulty) return false;
+  state.difficulty = difficulty;
+  state.phase = 'choosing';
+  return true;
+}
+
+/** Goes back from the gun choice to the difficulty choice. */
+export function changeDifficulty(state: StarShootState): boolean {
+  if (state.phase !== 'choosing') return false;
+  state.phase = 'difficulty';
+  return true;
+}
+
+/** The ammo a gun holds on a difficulty. */
+export function gunRounds(gun: Gun, difficulty: Difficulty | undefined): number {
+  return gun.rounds * (difficulty?.ammoScale ?? 1);
+}
+
+/** The radius of the hole a gun's BB tears on a difficulty. */
+export function holeRadius(gun: Gun, difficulty: Difficulty | undefined): number {
+  return gun.holeRadius * (difficulty?.holeScale ?? 1);
+}
+
+/** What a gun's card says on a difficulty, such as "200 BBs, dead accurate". */
+export function gunBlurb(gun: Gun, difficulty: Difficulty | undefined): string {
+  return `${gunRounds(gun, difficulty)} ${gun.blurb}`;
+}
+
+/** The subtitle on the gun choice: what it takes to shoot out the star. */
+export function finishHint(difficulty: Difficulty | undefined): string {
+  const at = difficulty?.shotOutAt ?? 1;
+  return at >= 1
+    ? 'Shoot out every bit of red in the star'
+    : `Shoot out ${Math.round(at * 100)}% of the red in the star`;
+}
+
 export function chooseGun(state: StarShootState, gunId: string): boolean {
   const gun = GUNS.find((g) => g.id === gunId);
   if (state.phase !== 'choosing' || !gun) return false;
   state.gun = gun;
-  state.rounds = gun.rounds;
+  state.rounds = gunRounds(gun, state.difficulty);
   state.phase = 'shooting';
   return true;
 }
 
-/** The hint on a gun's card: touch screens have no keys to press. */
+/** The hint on a card: touch screens have no keys to press. */
 export function gunHint(index: number, touch: boolean): string {
   return touch ? 'Tap' : `Click or press ${index + 1}`;
+}
+
+/** The difficulty whose button is at (x, y) on the difficulty screen, if any. */
+export function difficultyAt(x: number, y: number): Difficulty | undefined {
+  return DIFFICULTY_BUTTONS.find(
+    (b) => x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height,
+  )?.difficulty;
+}
+
+/** True if (x, y) is on the gun screen's "Change difficulty" button. */
+export function isOnChangeDifficulty(x: number, y: number): boolean {
+  const b = CHANGE_DIFFICULTY_BUTTON;
+  return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
 }
 
 /** The gun whose button is at (x, y) on the choosing screen, if any. */
@@ -201,10 +306,15 @@ export function clearedFraction(state: StarShootState): number {
 
 /** True once enough red is gone for the star to count as shot out. */
 export function isShotOut(state: StarShootState): boolean {
-  return clearedFraction(state) >= SHOT_OUT_AT - 1e-9;
+  return clearedFraction(state) >= (state.difficulty?.shotOutAt ?? 1) - 1e-9;
 }
 
-/** 10 points for every whole 1% of red shot out. */
+/** Points scaled by the difficulty's multiplier. */
+export function scaled(state: StarShootState, points: number): number {
+  return Math.round(points * (state.difficulty?.multiplier ?? 1));
+}
+
+/** 10 points for every whole 1% of red shot out, before the difficulty's multiplier. */
 export function starScore(state: StarShootState): number {
   return 10 * Math.floor(clearedFraction(state) * 100 + 1e-9);
 }
@@ -253,7 +363,7 @@ export function fire(
       state,
       aimX + Math.cos(angle) * distance,
       aimY + Math.sin(angle) * distance,
-      gun.holeRadius,
+      holeRadius(gun, state.difficulty),
     );
   }
   state.rounds -= 1;
@@ -293,11 +403,11 @@ export function claimFinalScore(state: StarShootState): number | undefined {
 function endShootingIfDone(state: StarShootState) {
   if (isShotOut(state)) {
     // Star shot out: every round left over is worth 10, then the clowns come.
-    state.score = starScore(state) + 10 * state.rounds;
+    state.score = scaled(state, starScore(state) + 10 * state.rounds);
     state.phase = 'bonus';
     state.trigger = undefined;
   } else if (state.rounds === 0) {
-    state.score = starScore(state);
+    state.score = scaled(state, starScore(state));
     state.phase = 'over';
     state.trigger = undefined;
   }
@@ -326,7 +436,7 @@ export function shootClown(state: StarShootState, x: number, y: number): boolean
   const at = clownOnScreen(hit);
   state.booms.push({ x: at.x, y: at.y, size: at.radius, age: 0 });
   state.clowns = state.clowns.filter((c) => c !== hit);
-  state.score += CLOWN_POINTS;
+  state.score += scaled(state, CLOWN_POINTS);
   state.clownsBlown += 1;
   return true;
 }
@@ -361,16 +471,22 @@ export function step(state: StarShootState, dt: number, random: () => number = M
   }
 }
 
-function drawChoosing(ctx: CanvasRenderingContext2D, touch: boolean) {
+function drawCards(
+  ctx: CanvasRenderingContext2D,
+  title: string,
+  subtitle: string,
+  buttons: { x: number; y: number; width: number; height: number; name: string; blurb: string }[],
+  touch: boolean,
+) {
   const { colors } = theme;
   ctx.textAlign = 'center';
   ctx.fillStyle = colors.accent;
   ctx.font = canvasFont('title', 'bold');
-  ctx.fillText('Choose your gun', WIDTH / 2, 130);
+  ctx.fillText(title, WIDTH / 2, 130);
   ctx.fillStyle = colors.muted;
   ctx.font = canvasFont('body');
-  ctx.fillText('Shoot out every bit of red in the star', WIDTH / 2, 165);
-  GUN_BUTTONS.forEach((button, i) => {
+  ctx.fillText(subtitle, WIDTH / 2, 165);
+  buttons.forEach((button, i) => {
     ctx.fillStyle = colors.surface;
     ctx.fillRect(button.x, button.y, button.width, button.height);
     ctx.strokeStyle = colors.accent;
@@ -379,12 +495,42 @@ function drawChoosing(ctx: CanvasRenderingContext2D, touch: boolean) {
     const cx = button.x + button.width / 2;
     ctx.fillStyle = colors.text;
     ctx.font = canvasFont('title', 'bold');
-    ctx.fillText(button.gun.name, cx, button.y + 55);
+    ctx.fillText(button.name, cx, button.y + 55);
     ctx.fillStyle = colors.muted;
     ctx.font = canvasFont('small');
-    ctx.fillText(button.gun.blurb, cx, button.y + 90);
+    ctx.fillText(button.blurb, cx, button.y + 90);
     ctx.fillText(gunHint(i, touch), cx, button.y + 120);
   });
+}
+
+function drawDifficulty(ctx: CanvasRenderingContext2D, touch: boolean) {
+  const buttons = DIFFICULTY_BUTTONS.map((b) => ({
+    ...b,
+    name: b.difficulty.name,
+    blurb: `${b.difficulty.blurb}, scores x${b.difficulty.multiplier}`,
+  }));
+  drawCards(ctx, 'Choose a difficulty', 'Easy is kind to phones', buttons, touch);
+}
+
+function drawChoosing(ctx: CanvasRenderingContext2D, state: StarShootState, touch: boolean) {
+  const { colors } = theme;
+  const buttons = GUN_BUTTONS.map((b) => ({
+    ...b,
+    name: b.gun.name,
+    blurb: gunBlurb(b.gun, state.difficulty),
+  }));
+  drawCards(ctx, 'Choose your gun', finishHint(state.difficulty), buttons, touch);
+  const b = CHANGE_DIFFICULTY_BUTTON;
+  ctx.strokeStyle = colors.muted;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(b.x, b.y, b.width, b.height);
+  ctx.fillStyle = colors.muted;
+  ctx.font = canvasFont('small');
+  ctx.fillText(
+    `${state.difficulty?.name ?? ''}: ${touch ? 'tap' : 'click or press D'} to change`,
+    b.x + b.width / 2,
+    b.y + 27,
+  );
 }
 
 function drawStar(
@@ -546,7 +692,8 @@ function draw(
     }
   }
 
-  if (state.phase === 'choosing') drawChoosing(ctx, touch);
+  if (state.phase === 'difficulty') drawDifficulty(ctx, touch);
+  else if (state.phase === 'choosing') drawChoosing(ctx, state, touch);
   else if (state.phase === 'bonus') drawBonus(ctx, state, aim);
   else drawStar(ctx, state, aim);
 
@@ -564,7 +711,12 @@ function draw(
     ctx.fillText(headline, WIDTH / 2, HEIGHT / 2);
     ctx.fillStyle = colors.text;
     ctx.font = canvasFont('body');
-    ctx.fillText('Click to play again', WIDTH / 2, HEIGHT / 2 + 40);
+    ctx.fillText(
+      `${state.difficulty?.name ?? ''} difficulty, scores x${state.difficulty?.multiplier ?? 1}`,
+      WIDTH / 2,
+      HEIGHT / 2 + 40,
+    );
+    ctx.fillText('Click to play again', WIDTH / 2, HEIGHT / 2 + 75);
   }
 }
 
@@ -603,10 +755,14 @@ export const starShoot: CarnivalGame = {
       Object.assign(aim, toCanvas(event));
       if (state.phase === 'over') {
         recordIfOver();
-        state = createState();
+        state = createState(state.difficulty);
+      } else if (state.phase === 'difficulty') {
+        const difficulty = difficultyAt(aim.x, aim.y);
+        if (difficulty) chooseDifficulty(state, difficulty.id);
       } else if (state.phase === 'choosing') {
         const gun = gunAt(aim.x, aim.y);
         if (gun) chooseGun(state, gun.id);
+        else if (isOnChangeDifficulty(aim.x, aim.y)) changeDifficulty(state);
       } else if (state.phase === 'bonus') {
         shootClown(state, aim.x, aim.y);
       } else {
@@ -617,8 +773,15 @@ export const starShoot: CarnivalGame = {
       releaseTrigger(state);
     };
     const onKey = (event: KeyboardEvent) => {
-      const gun = GUNS[Number(event.key) - 1];
-      if (gun) chooseGun(state, gun.id);
+      if (state.phase === 'difficulty') {
+        const difficulty = DIFFICULTIES[Number(event.key) - 1];
+        if (difficulty) chooseDifficulty(state, difficulty.id);
+      } else if (event.key.toLowerCase() === 'd') {
+        changeDifficulty(state);
+      } else {
+        const gun = GUNS[Number(event.key) - 1];
+        if (gun) chooseGun(state, gun.id);
+      }
     };
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerdown', onDown);

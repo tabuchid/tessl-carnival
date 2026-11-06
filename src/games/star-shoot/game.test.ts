@@ -2,18 +2,25 @@ import { describe, expect, it } from 'vitest';
 import {
   BONUS_TIME,
   CLOWN_POINTS,
+  DIFFICULTIES,
+  DIFFICULTY_BUTTONS,
   GUNS,
   GUN_BUTTONS,
   MAX_ESCAPES,
-  SHOT_OUT_AT,
   STAR,
+  changeDifficulty,
+  chooseDifficulty,
   chooseGun,
   claimFinalScore,
   clownOnScreen,
   createState,
+  difficultyAt,
+  finishHint,
   fire,
   gunAt,
+  gunBlurb,
   gunHint,
+  holeRadius,
   isInStar,
   isShotOut,
   pullTrigger,
@@ -26,9 +33,10 @@ import {
 } from './game';
 
 const centre = () => 0;
+const [EASY, NORMAL, HARD] = DIFFICULTIES;
 
-function shooting(gunId = 'plinker'): StarShootState {
-  const state = createState();
+function shooting(gunId = 'plinker', difficulty = NORMAL): StarShootState {
+  const state = createState(difficulty);
   chooseGun(state, gunId);
   return state;
 }
@@ -44,16 +52,53 @@ function clearAllButTip(state: StarShootState) {
 }
 
 describe('star shoot', () => {
-  it('starts on the gun choice with a fully red star and no score', () => {
+  it('starts on the difficulty choice with a fully red star and no score', () => {
     const state = createState();
-    expect(state.phase).toBe('choosing');
+    expect(state.phase).toBe('difficulty');
     expect(state.redTotal).toBeGreaterThan(0);
     expect(state.redLeft).toBe(state.redTotal);
     expect(state.score).toBe(0);
   });
 
-  it('cannot fire before a gun is chosen', () => {
+  it('cannot choose a gun before a difficulty', () => {
     const state = createState();
+    expect(chooseGun(state, 'plinker')).toBe(false);
+    expect(chooseDifficulty(state, 'easy')).toBe(true);
+    expect(state.phase).toBe('choosing');
+    expect(state.difficulty).toBe(EASY);
+    expect(chooseGun(state, 'plinker')).toBe(true);
+  });
+
+  it('ignores a difficulty that does not exist', () => {
+    const state = createState();
+    expect(chooseDifficulty(state, 'nightmare')).toBe(false);
+    expect(state.phase).toBe('difficulty');
+  });
+
+  it('starts a restarted round on the gun choice with the last difficulty', () => {
+    const state = createState(HARD);
+    expect(state.phase).toBe('choosing');
+    expect(state.difficulty).toBe(HARD);
+  });
+
+  it('can go back from the gun choice to change the difficulty', () => {
+    const state = createState(HARD);
+    expect(changeDifficulty(state)).toBe(true);
+    expect(state.phase).toBe('difficulty');
+    expect(chooseDifficulty(state, 'easy')).toBe(true);
+    expect(state.difficulty).toBe(EASY);
+    chooseGun(state, 'plinker');
+    expect(changeDifficulty(state)).toBe(false);
+  });
+
+  it('finds the difficulty under a tap on the difficulty screen', () => {
+    const button = DIFFICULTY_BUTTONS[2];
+    expect(difficultyAt(button.x + 5, button.y + 5)).toBe(HARD);
+    expect(difficultyAt(0, 0)).toBeUndefined();
+  });
+
+  it('cannot fire before a gun is chosen', () => {
+    const state = createState(NORMAL);
     expect(fire(state, STAR.x, STAR.y)).toBe(false);
     expect(state.redLeft).toBe(state.redTotal);
   });
@@ -66,8 +111,29 @@ describe('star shoot', () => {
     }
   });
 
+  it('doubles the ammo on Easy and keeps the original ammo on Normal and Hard', () => {
+    for (const gun of GUNS) {
+      expect(shooting(gun.id, EASY).rounds).toBe(gun.rounds * 2);
+      expect(shooting(gun.id, NORMAL).rounds).toBe(gun.rounds);
+      expect(shooting(gun.id, HARD).rounds).toBe(gun.rounds);
+    }
+    expect(gunBlurb(GUNS[0], EASY)).toBe('200 BBs, dead accurate');
+    expect(gunBlurb(GUNS[2], HARD)).toBe('30 shells of 6 BBs each');
+  });
+
+  it('tears the original holes on Hard, double on Normal and bigger again on Easy', () => {
+    expect(GUNS.map((gun) => holeRadius(gun, HARD))).toEqual([7, 6, 6]);
+    expect(GUNS.map((gun) => holeRadius(gun, NORMAL))).toEqual([14, 12, 12]);
+    for (const gun of GUNS) {
+      expect(holeRadius(gun, EASY)).toBeGreaterThan(holeRadius(gun, NORMAL));
+    }
+    const state = shooting('plinker', EASY);
+    fire(state, STAR.x, STAR.y, centre);
+    expect(state.holes[0].radius).toBe(holeRadius(GUNS[0], EASY));
+  });
+
   it('ignores a gun that does not exist', () => {
-    const state = createState();
+    const state = createState(NORMAL);
     expect(chooseGun(state, 'cannon')).toBe(false);
     expect(state.phase).toBe('choosing');
   });
@@ -106,7 +172,7 @@ describe('star shoot', () => {
   });
 
   it('scores 10 points for every whole percent of red shot out', () => {
-    const state = createState();
+    const state = createState(NORMAL);
     state.redLeft = Math.round(state.redTotal * 0.5);
     expect(starScore(state)).toBe(500);
     state.redLeft = 0;
@@ -132,26 +198,52 @@ describe('star shoot', () => {
     expect(state.score).toBe(1000 + 10 * 39);
   });
 
-  it('counts the star as shot out at 97% cleared, specks and all', () => {
-    const state = shooting();
-    state.redLeft = Math.ceil(state.redTotal * (1 - SHOT_OUT_AT)) + 1;
-    state.rounds = 1;
-    fire(state, 20, 450, centre);
-    expect(isShotOut(state)).toBe(false);
-    expect(state.phase).toBe('over');
+  it('finishes at 90% on Easy, 97% on Normal and every bit of red on Hard', () => {
+    expect(DIFFICULTIES.map((d) => d.shotOutAt)).toEqual([0.9, 0.97, 1]);
+    for (const difficulty of DIFFICULTIES) {
+      const short = shooting('plinker', difficulty);
+      short.redLeft = Math.ceil(short.redTotal * (1 - difficulty.shotOutAt)) + 1;
+      short.rounds = 1;
+      fire(short, 20, 450, centre);
+      expect(isShotOut(short)).toBe(false);
+      expect(short.phase).toBe('over');
+    }
 
-    const specks = shooting();
-    specks.redLeft = Math.floor(specks.redTotal * (1 - SHOT_OUT_AT)) + 1;
-    specks.rounds = 20;
-    fire(specks, STAR.x, STAR.y, centre);
-    expect(specks.redLeft).toBeGreaterThan(0);
-    expect(isShotOut(specks)).toBe(true);
-    expect(specks.phase).toBe('bonus');
-    expect(specks.score).toBe(starScore(specks) + 10 * 19);
+    for (const difficulty of [EASY, NORMAL]) {
+      const specks = shooting('plinker', difficulty);
+      specks.redLeft = Math.floor(specks.redTotal * (1 - difficulty.shotOutAt)) + 1;
+      specks.rounds = 20;
+      fire(specks, STAR.x, STAR.y, centre);
+      expect(specks.redLeft).toBeGreaterThan(0);
+      expect(isShotOut(specks)).toBe(true);
+      expect(specks.phase).toBe('bonus');
+    }
+
+    const hard = shooting('plinker', HARD);
+    hard.redLeft = 1;
+    expect(isShotOut(hard)).toBe(false);
   });
 
-  it('gives every gun a hole big enough for a phone', () => {
-    for (const gun of GUNS) expect(gun.holeRadius).toBeGreaterThanOrEqual(12);
+  it('multiplies every score by the difficulty: x0.5 on Easy, x1 on Normal, x2 on Hard', () => {
+    expect(DIFFICULTIES.map((d) => d.multiplier)).toEqual([0.5, 1, 2]);
+    for (const difficulty of DIFFICULTIES) {
+      const state = shooting('plinker', difficulty);
+      clearAllButTip(state);
+      state.rounds = 40;
+      fire(state, STAR.x, STAR.y - STAR.outer + 6, centre);
+      expect(state.phase).toBe('bonus');
+      expect(state.score).toBe((1000 + 10 * 39) * difficulty.multiplier);
+      state.clowns = [{ lane: 0, z: 0.5 }];
+      const at = clownOnScreen(state.clowns[0]);
+      shootClown(state, at.x, at.y);
+      expect(state.score).toBe((1000 + 10 * 39 + CLOWN_POINTS) * difficulty.multiplier);
+    }
+  });
+
+  it("matches the gun choice's subtitle to the difficulty's finish", () => {
+    expect(finishHint(EASY)).toBe('Shoot out 90% of the red in the star');
+    expect(finishHint(NORMAL)).toBe('Shoot out 97% of the red in the star');
+    expect(finishHint(HARD)).toBe('Shoot out every bit of red in the star');
   });
 
   it('says Tap on a touch screen and names the key otherwise', () => {
@@ -208,7 +300,7 @@ describe('star shoot', () => {
 
   describe('bonus round', () => {
     function bonus(): StarShootState {
-      const state = createState();
+      const state = createState(NORMAL);
       state.phase = 'bonus';
       state.spawnIn = 100;
       return state;
